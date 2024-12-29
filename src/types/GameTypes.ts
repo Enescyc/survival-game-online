@@ -37,4 +37,9 @@ export interface GameState {
   isDayTime: boolean;
   timeRemaining: number;
   gameStatus: 'waiting' | 'running' | 'finished';
+}
+
+export interface LeaderboardEntry {
+  playerName: string;
+  score: number;
 } 

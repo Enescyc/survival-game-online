@@ -1,7 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { GameState, Player, Position, Resource, SafeZone } from './types/GameTypes';
+import { GameState, Player, Position, Resource, SafeZone, LeaderboardEntry } from './types/GameTypes';
 import { json } from 'express';
 
 const app = express();
@@ -138,6 +138,29 @@ interface PlayerState {
   isSpectator: boolean;
 }
 
+// Add after other interface/type definitions
+const leaderboard: LeaderboardEntry[] = [];
+const MAX_LEADERBOARD_ENTRIES = 10;
+
+// Add this function to handle leaderboard updates
+function updateLeaderboard(playerName: string, score: number) {
+  const existingEntry = leaderboard.find(entry => entry.playerName === playerName);
+  
+  if (existingEntry) {
+    if (score > existingEntry.score) {
+      existingEntry.score = score;
+      leaderboard.sort((a, b) => b.score - a.score);
+    }
+  } else {
+    leaderboard.push({ playerName, score });
+    leaderboard.sort((a, b) => b.score - a.score);
+    
+    if (leaderboard.length > MAX_LEADERBOARD_ENTRIES) {
+      leaderboard.pop();
+    }
+  }
+}
+
 // Update socket connection handling
 io.on('connection', (socket) => {
   console.log('Player connected:', socket.id);
@@ -226,6 +249,12 @@ io.on('connection', (socket) => {
     gameState.players.delete(socket.id);
     playerMovements.delete(socket.id);
     io.emit('playerDisconnected', socket.id);
+  });
+
+  // Add in the WebSocket message handling section
+  socket.on('gameOver', (data: { playerName: string; score: number }) => {
+    updateLeaderboard(data.playerName, data.score);
+    io.emit('leaderboardUpdate', leaderboard);
   });
 });
 
@@ -321,27 +350,31 @@ function gameLoop() {
       io.emit('dayNightChange', gameState.isDayTime);
     }
 
-    // Update player resources with new depletion rates
+    // Update player resources with new depletion rules
     gameState.players.forEach((player) => {
-      // Base depletion rate is 5
+      // Base depletion rate
       let depletionRate = 5;
 
-      // If it's night time, multiply the depletion rate
-      if (!gameState.isDayTime) {
-        // If player is not in safe zone during night, use 15
-        // If in safe zone during night, use 10 (5 * 2)
-        depletionRate = player.isInSafeZone ? 10 : 15;
-      }
-      
-      // Update each resource type
-      player.resources.food = Math.max(0, player.resources.food - depletionRate);
-      player.resources.water = Math.max(0, player.resources.water - depletionRate);
-      player.resources.oxygen = Math.max(0, player.resources.oxygen - depletionRate);
+      // Only decrease resources if:
+      // 1. It's daytime (always decrease during day) OR
+      // 2. Player is not in safe zone during night
+      if (gameState.isDayTime || !player.isInSafeZone) {
+        // If it's night time and player is not in safe zone, increase depletion rate
+        if (!gameState.isDayTime && !player.isInSafeZone) {
+          depletionRate = 15; // Higher penalty for being outside during night
+        }
+        
+        // Update each resource type
+        player.resources.food = Math.max(0, player.resources.food - depletionRate);
+        player.resources.water = Math.max(0, player.resources.water - depletionRate);
+        player.resources.oxygen = Math.max(0, player.resources.oxygen - depletionRate);
 
-      // Check if player is completely dead
-      if (isPlayerDead(player)) {
-        handlePlayerDeath(player.id);
+        // Check if player is completely dead
+        if (isPlayerDead(player)) {
+          handlePlayerDeath(player.id);
+        }
       }
+      // If player is in safe zone during night, no resource depletion
     });
 
     // Emit game state update
@@ -608,4 +641,9 @@ function handlePlayerDeath(playerId: string) {
       playerName: player.name
     });
   }
-} 
+}
+
+// Add a new endpoint to get initial leaderboard data
+app.get('/api/leaderboard', (req, res) => {
+  res.json(leaderboard);
+}); 

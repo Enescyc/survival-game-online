@@ -40,3 +40,41 @@
 .read-the-docs {
   color: #888;
 }
+
+.leaderboard {
+  background: rgba(0, 0, 0, 0.7);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-top: 1rem;
+  color: white;
+}
+
+.leaderboard h3 {
+  margin: 0 0 0.5rem 0;
+  text-align: center;
+}
+
+.leaderboard-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.leaderboard-entry {
+  display: grid;
+  grid-template-columns: 30px 1fr 80px;
+  gap: 1rem;
+  padding: 0.25rem;
+}
+
+.leaderboard-entry:nth-child(1) {
+  color: gold;
+}
+
+.leaderboard-entry:nth-child(2) {
+  color: silver;
+}
+
+.leaderboard-entry:nth-child(3) {
+  color: #cd7f32;
+}

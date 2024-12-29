@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { GameState, Position } from '../types/GameTypes';
 import CanvasOverlay from './CanvasOverlay';
+import { Socket } from 'socket.io-client';
 
 interface GameCanvasProps {
   gameState: GameState;
   playerId: string;
   onMove: (position: Position) => void;
+  socket: Socket;
 }
 
 // Lerp helper function
@@ -90,7 +92,7 @@ const NIGHT_GRADIENT_COLORS = {
   end: '#2a2a3d'    // Medium dark blue
 };
 
-const GameCanvas = React.memo(({ gameState, playerId, onMove }: GameCanvasProps) => {
+const GameCanvas = React.memo(({ gameState, playerId, onMove, socket }: GameCanvasProps) => {
   // Add this line at the top of the component
   const player = gameState.players.find(p => p.id === playerId);
   
@@ -590,6 +592,12 @@ const GameCanvas = React.memo(({ gameState, playerId, onMove }: GameCanvasProps)
       currentPosition: { x: currentX, y: currentY }
     }));
   }, [joystick.active, joystick.startPosition, playerId, onMove]);
+
+  // In the handleGameOver function or wherever you handle game over
+  socket.emit('gameOver', {
+    playerName: gameState.players.find(p => p.id === playerId)?.name || 'Unknown',
+    score: gameState.players.find(p => p.id === playerId)?.score || 0
+  });
 
   return (
     <div 

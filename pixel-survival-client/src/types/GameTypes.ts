@@ -62,4 +62,9 @@ export interface GameFinishedData {
     name: string;
     score: number;
   }[];
+}
+
+export interface LeaderboardEntry {
+  playerName: string;
+  score: number;
 } 

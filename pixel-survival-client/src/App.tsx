@@ -1,11 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { GameState, Player, Position } from './types/GameTypes';
+import { GameState, Player, Position, LeaderboardEntry } from './types/GameTypes';
 import GameCanvas from './components/GameCanvas';
 import { soundManager } from './utils/SoundManager';
 import RegisterForm from './components/RegisterForm';
+import Leaderboard from './components/Leaderboard';
+import React from 'react';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://192.168.1.100:3000';
+
+// Memoize GameCanvas component
+const MemoizedGameCanvas = React.memo(GameCanvas);
+const MemoizedLeaderboard = React.memo(Leaderboard);
 
 function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -13,6 +19,21 @@ function App() {
   const [playerId, setPlayerId] = useState<string>('');
   const [isRegistered, setIsRegistered] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+
+  const handleLeaderboardUpdate = useCallback((newLeaderboard: LeaderboardEntry[]) => {
+    setLeaderboard(newLeaderboard);
+  }, []);
+
+  useEffect(() => {
+    if (!socket) return;
+    
+    socket.on('leaderboardUpdate', handleLeaderboardUpdate);
+    
+    return () => {
+      socket.off('leaderboardUpdate');
+    };
+  }, [socket, handleLeaderboardUpdate]);
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
@@ -85,7 +106,16 @@ function App() {
     });
 
     newSocket.on('gameStateUpdate', (state: GameState) => {
-      console.log('Received game state update:', state);
+      const player = state.players.find(p => p.id === playerId);
+      if (player) {
+        if (!player.isInSafeZone || state.isDayTime) {
+          if (player.resources.food <= 30 || 
+              player.resources.water <= 30 || 
+              player.resources.oxygen <= 30) {
+            soundManager.play('low-resource');
+          }
+        }
+      }
       setGameState({
         ...state,
         players: Array.isArray(state.players) ? state.players : Array.from(state.players)
@@ -195,7 +225,8 @@ function App() {
     };
   }, [socket]);
 
-  const handleMove = (position: Position) => {
+  // Memoize handleMove callback
+  const handleMove = useCallback((position: Position) => {
     if (socket && gameState) {
       socket.emit('movePlayer', position);
       
@@ -217,7 +248,7 @@ function App() {
         };
       });
     }
-  };
+  }, [socket, gameState, playerId]);
 
   const handleRegister = (name: string) => {
     if (socket) {
@@ -274,10 +305,11 @@ function App() {
         )}
         <div className="flex-1 min-w-0">
           {gameState && socket ? (
-            <GameCanvas
+            <MemoizedGameCanvas
               gameState={gameState}
               playerId={playerId}
               onMove={handleMove}
+              socket={socket}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
@@ -327,6 +359,10 @@ function App() {
           )}
         </aside>
       </main>
+
+      <div className="mt-auto">
+        <MemoizedLeaderboard entries={leaderboard} />
+      </div>
     </div>
   );
 }

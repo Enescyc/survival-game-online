@@ -16,45 +16,106 @@ function App() {
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling'],
       reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 10,
+      timeout: 20000,
+      forceNew: true,
+      autoConnect: true
     });
     
     newSocket.on('connect', () => {
-      console.log('Connected to server');
+      console.log('Connected to server with ID:', newSocket.id);
       setPlayerId(newSocket.id!);
       setConnectionStatus('connected');
     });
 
     newSocket.on('connect_error', (error) => {
-      console.error('Connection error:', error);
+      console.error('Socket connection error:', error);
       setConnectionStatus('error');
     });
 
+    newSocket.on('connect_timeout', () => {
+      console.error('Socket connection timeout');
+      setConnectionStatus('error');
+    });
+
+    newSocket.on('error', (error) => {
+      console.error('Socket error:', error);
+      setConnectionStatus('error');
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('Disconnected:', reason);
+      setConnectionStatus('connecting');
+    });
+
     newSocket.on('gameState', (state: GameState) => {
-      console.log('Received game state:', state);
+      console.log('Received initial game state:', state);
       setGameState({
         ...state,
-        players: Array.from(state.players)
+        players: Array.isArray(state.players) ? state.players : Array.from(state.players)
       });
+    });
+
+    newSocket.on('preparationPhase', (data: { message: string; timeRemaining: number }) => {
+      console.log('Preparation phase:', data);
+      setGameState(prev => prev ? {
+        ...prev,
+        gameStatus: 'waiting',
+        timeRemaining: data.timeRemaining
+      } : null);
+    });
+    newSocket.on('gameStarted', (newGameState: GameState) => {
+      console.log('Game started:', newGameState);
+      setGameState(newGameState);
+      soundManager.play('gameStart');
+      soundManager.play('background');
+    });
+
+    newSocket.on('preparationUpdate', (timeRemaining: number) => {
+      console.log('Preparation update:', timeRemaining);
+      setGameState(prev => prev ? {
+        ...prev,
+        gameStatus: 'waiting',
+        timeRemaining: timeRemaining
+      } : null);
+    });
+
+    newSocket.on('gameStateUpdate', (state: GameState) => {
+      console.log('Received game state update:', state);
+      setGameState({
+        ...state,
+        players: Array.isArray(state.players) ? state.players : Array.from(state.players)
+      });
+    });
+
+    newSocket.on('playerDied', () => {
+      console.log('Player died - entering spectator mode');
+      soundManager.play('gameOver');
+      if (!gameState?.players.find(p => p.id === playerId)?.isSpectator) {
+        
+      }
+    });
+
+    newSocket.on('playerBecameSpectator', (data: { playerId: string, playerName: string }) => {
+      console.log(`${data.playerName} became a spectator`);
     });
 
     setSocket(newSocket);
 
     return () => {
-      newSocket.close();
+      if (newSocket) {
+        console.log('Cleaning up socket connection');
+        newSocket.disconnect();
+      }
     };
   }, []);
 
   useEffect(() => {
     if (!socket) return;
-
-    socket.on('gameStarted', () => {
-      soundManager.play('gameStart');
-      soundManager.play('background');
-    });
 
     socket.on('resourceCollected', ({ resourceId, playerId: collectorId, newResourceValue }) => {
       if (collectorId === playerId) {
@@ -92,7 +153,10 @@ function App() {
           soundManager.play('low-resource');
         }
       }
-      setGameState(state);
+      setGameState({
+        ...state,
+        players: Array.isArray(state.players) ? state.players : Array.from(state.players)
+      });
     });
 
     socket.on('gameOver', (score: number) => {
@@ -155,21 +219,6 @@ function App() {
     }
   };
 
-  const handleStartGame = () => {
-    fetch(`${SOCKET_URL}/start-game`, {
-      method: 'POST',
-    });
-  };
-
-  useEffect(() => {
-    const player = gameState?.players.find(p => p.id === playerId);
-    if (player?.isInSafeZone) {
-      soundManager.play('safe');
-    } else if (player && !player.isInSafeZone && !gameState?.isDayTime) {
-      soundManager.play('danger');
-    }
-  }, [gameState?.players, playerId, gameState?.isDayTime]);
-
   const handleRegister = (name: string) => {
     if (socket) {
       console.log('Registering with name:', name);
@@ -201,24 +250,28 @@ function App() {
       <header className="p-4 bg-gray-900">
         <div className="container mx-auto flex justify-between items-center">
           <h1 className="text-2xl font-bold">Pixel Survival</h1>
-          <div className="flex gap-4">
+          <div className="flex gap-4 items-center">
+            <span className={gameState?.gameStatus === 'waiting' ? 'text-yellow-400' : 'text-green-400'}>
+              {gameState?.gameStatus === 'waiting' ? 'Next game in: ' : 'Game ends in: '}
+              {Math.floor(gameState.timeRemaining / 60)}:
+              {(gameState.timeRemaining % 60).toString().padStart(2, '0')}
+            </span>
             <button
               onClick={() => soundManager.toggleMute()}
               className="p-2 hover:bg-gray-700 rounded-full transition-colors"
             >
               🔊
             </button>
-            <button
-              onClick={handleStartGame}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
-            >
-              Start New Game
-            </button>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 flex gap-4 p-4 overflow-hidden">
+      <main className="flex-1 flex flex-col md:flex- gap-4 p-4 overflow-hidden">
+        {player?.isSpectator && (
+          <div className="bg-red-500 text-white px-4 py-2 text-center">
+            Spectator Mode - Waiting for next game
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           {gameState && socket ? (
             <GameCanvas
@@ -241,12 +294,14 @@ function App() {
                   <h2 className="text-lg font-semibold mb-2">Game Info</h2>
                   <div className="space-y-2 text-sm">
                     <p className="flex justify-between">
-                      <span>Time:</span>
-                      <span>{Math.floor(gameState.timeRemaining / 60)}:{(gameState.timeRemaining % 60).toString().padStart(2, '0')}</span>
+                      <span>Status:</span>
+                      <span>{gameState.gameStatus === 'waiting' ? 'Preparing Next Game' : 
+                             gameState.gameStatus === 'running' ? 'Game In Progress' : 'Game Finished'}</span>
                     </p>
                     <p className="flex justify-between">
-                      <span>Status:</span>
-                      <span>{gameState.gameStatus}</span>
+                      <span>{gameState.gameStatus === 'waiting' ? 'Next Game:' : 'Time Left:'}</span>
+                      <span>{Math.floor(gameState.timeRemaining / 60)}:
+                            {(gameState.timeRemaining % 60).toString().padStart(2, '0')}</span>
                     </p>
                     <p className="flex justify-between">
                       <span>Time of Day:</span>

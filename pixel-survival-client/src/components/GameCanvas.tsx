@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { GameState, Position } from '../types/GameTypes';
 import CanvasOverlay from './CanvasOverlay';
 
@@ -33,7 +33,7 @@ interface KeyState {
 const NIGHT_OVERLAY_OPACITY = 0.5;
 const SAFE_ZONE_PULSE_SPEED = 0.002;
 const RESOURCE_GLOW_INTENSITY = 0.3;
-const PLAYER_TRAIL_LENGTH = 5;
+
 
 // Add these constants for enhanced visuals
 const RESOURCE_PULSE_SPEED = 0.003;
@@ -60,7 +60,6 @@ interface Particle {
 }
 
 // Add these constants
-const PLAYER_DIRECTION_SPEED = 0.1;
 const PLAYER_BOUNCE_SPEED = 0.004;
 const PLAYER_EYE_RADIUS = PLAYER_SIZE / 6;
 
@@ -68,6 +67,21 @@ const PLAYER_EYE_RADIUS = PLAYER_SIZE / 6;
 const MIN_RESOURCE_SIZE = 8;
 const MAX_RESOURCE_SIZE = 16;
 const MAX_RESOURCE_AMOUNT = 100;
+
+// Add these constants at the top with other constants
+const JOYSTICK_SIZE = 80;
+const JOYSTICK_INNER_SIZE = 40;
+const JOYSTICK_DEAD_ZONE = 10;
+const MOBILE_MOVEMENT_SPEED = 3;
+
+// Add these constants
+const DPAD_SIZE = 150;
+const DPAD_BUTTON_SIZE = 50;
+const DPAD_OPACITY = 0.4;
+
+// Add these constants at the top
+const TOUCH_DEAD_ZONE = 10;
+const TOUCH_DIRECTION_SPEED = 5;
 
 interface PlayerVisual {
   id: string;
@@ -81,9 +95,39 @@ interface PlayerVisual {
   };
   score: number;
   isInSafeZone: boolean;
+  isSpectator: boolean;
 }
 
-const GameCanvas = ({ gameState, playerId, onMove }: GameCanvasProps) => {
+// Add this interface
+interface JoystickState {
+  active: boolean;
+  startPosition: Position;
+  currentPosition: Position;
+}
+
+// Add this utility function
+const vibrate = (pattern: number | number[]) => {
+  if ('vibrate' in navigator) {
+    navigator.vibrate(pattern);
+  }
+};
+
+// Use in various actions
+const handleCollect = () => {
+  vibrate(50); // Short vibration
+  // Collection logic
+};
+
+const handleDanger = () => {
+  vibrate([100, 50, 100]); // Pattern for danger
+  // Danger logic
+};
+
+const GameCanvas = React.memo(({ gameState, playerId, onMove }: GameCanvasProps) => {
+  // Add this line at the top of the component
+  const player = gameState.players.find(p => p.id === playerId);
+  
+  // Use refs for values that don't need to trigger re-renders
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playersRef = useRef<Map<string, PlayerVisual>>(new Map());
   const animationFrameRef = useRef<number>();
@@ -97,18 +141,300 @@ const GameCanvas = ({ gameState, playerId, onMove }: GameCanvasProps) => {
   const moveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const scaleRef = useRef<number>(1);
-
-  // Add state for overlay position
-  const [overlayPosition, setOverlayPosition] = useState({ top: 0, right: 0 });
-
-  // Add state for particles
   const particlesRef = useRef<Particle[]>([]);
 
-  // Add transition state
-  const dayNightTransitionRef = useRef(gameState.isDayTime ? 1 : 0);
-
-  // Add mouse position state
+  // Memoize state updates
+  const [overlayPosition, setOverlayPosition] = useState({ top: 0, right: 0 });
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  // Memoize player updates
+  useEffect(() => {
+    const updatePlayers = () => {
+      gameState.players.forEach(player => {
+        const existingPlayer = playersRef.current.get(player.id);
+        if (existingPlayer) {
+          existingPlayer.targetPosition = player.position;
+          existingPlayer.resources = player.resources;
+          existingPlayer.score = player.score;
+          existingPlayer.isInSafeZone = player.isInSafeZone;
+        } else {
+          playersRef.current.set(player.id, {
+            ...player,
+            visualPosition: { ...player.position },
+            targetPosition: { ...player.position },
+            name: ''
+          });
+        }
+      });
+    };
+
+    updatePlayers();
+  }, [gameState.players]);
+
+  // Memoize the update positions function
+  const updatePositions = useCallback(() => {
+    playersRef.current.forEach(player => {
+      if (player.visualPosition.x !== player.targetPosition.x || 
+          player.visualPosition.y !== player.targetPosition.y) {
+        
+        const dx = player.targetPosition.x - player.visualPosition.x;
+        const dy = player.targetPosition.y - player.visualPosition.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < POSITION_THRESHOLD) {
+          player.visualPosition.x = player.targetPosition.x;
+          player.visualPosition.y = player.targetPosition.y;
+        } else {
+          player.visualPosition.x = lerp(player.visualPosition.x, player.targetPosition.x, MOVEMENT_SPEED);
+          player.visualPosition.y = lerp(player.visualPosition.y, player.targetPosition.y, MOVEMENT_SPEED);
+        }
+      }
+    });
+  }, []);
+
+  // Memoize render dependencies
+  const renderDeps = useMemo(() => ({
+    gameState,
+    playerId,
+    mousePos
+  }), [gameState, playerId, mousePos]);
+
+  // Move this function before the render function
+  const processKeyboardMovement = useCallback(() => {
+    const player = playersRef.current.get(playerId);
+    if (!player) return;
+
+    const keys = keyStateRef.current;
+    let dx = 0;
+    let dy = 0;
+
+    if (keys.up) dy -= 1;
+    if (keys.down) dy += 1;
+    if (keys.left) dx -= 1;
+    if (keys.right) dx += 1;
+
+    // If there's movement
+    if (dx !== 0 || dy !== 0) {
+      // Normalize diagonal movement
+      if (dx !== 0 && dy !== 0) {
+        dx *= DIAGONAL_MODIFIER;
+        dy *= DIAGONAL_MODIFIER;
+      }
+
+      // Calculate new position
+      const newX = Math.max(0, Math.min(800, player.targetPosition.x + dx * KEYBOARD_SPEED));
+      const newY = Math.max(0, Math.min(600, player.targetPosition.y + dy * KEYBOARD_SPEED));
+
+      // Only send update if position has changed significantly
+      if (!lastPositionRef.current ||
+          getDistance(lastPositionRef.current, { x: newX, y: newY }) > 1) {
+        
+        // Update the target position immediately for smooth local movement
+        player.targetPosition = { x: newX, y: newY };
+        
+        // Throttle network updates
+        if (!moveTimeoutRef.current) {
+          moveTimeoutRef.current = setTimeout(() => {
+            onMove({ x: newX, y: newY });
+            lastPositionRef.current = { x: newX, y: newY };
+            moveTimeoutRef.current = null;
+          }, 16); // Increase update frequency for more responsive movement
+        }
+      }
+    }
+  }, [playerId, onMove]);
+
+  // The render function that uses processKeyboardMovement
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+
+    // Clear with a single operation
+    ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    // Batch similar operations
+    ctx.save();
+    
+    // Draw background with gradient
+    const bgGradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+    if (gameState.isDayTime) {
+      bgGradient.addColorStop(0, '#87CEEB');
+      bgGradient.addColorStop(1, '#90EE90');
+    } else {
+      bgGradient.addColorStop(0, '#1a1a2e');
+      bgGradient.addColorStop(1, '#2F4F4F');
+    }
+    ctx.fillStyle = bgGradient;
+    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    // Draw safe zones
+    gameState.safeZones.forEach(zone => {
+      const pulseScale = Math.sin(Date.now() * SAFE_ZONE_PULSE_SPEED) * 0.1 + 1;
+      
+      // Draw outer glow
+      const gradient = ctx.createRadialGradient(
+        zone.position.x, zone.position.y, zone.radius * 0.8,
+        zone.position.x, zone.position.y, zone.radius * pulseScale
+      );
+      gradient.addColorStop(0, 'rgba(255, 255, 0, 0.2)');
+      gradient.addColorStop(1, 'rgba(255, 255, 0, 0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(zone.position.x, zone.position.y, zone.radius * pulseScale, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Draw resources
+    gameState.resources.forEach(resource => {
+      const baseSize = MIN_RESOURCE_SIZE + 
+        ((MAX_RESOURCE_SIZE - MIN_RESOURCE_SIZE) * (resource.amount / MAX_RESOURCE_AMOUNT));
+      const pulse = Math.sin(Date.now() * RESOURCE_PULSE_SPEED) * 0.2 + 1;
+      const size = baseSize * pulse;
+
+      ctx.fillStyle = resource.type === 'food' ? '#FFD700' : 
+                     resource.type === 'water' ? '#87CEFA' : '#F0FFFF';
+      ctx.beginPath();
+      ctx.arc(resource.position.x, resource.position.y, size, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Draw only non-spectator players
+    playersRef.current.forEach(player => {
+      if (!player.isSpectator) { // Only render non-spectator players
+        const { x, y } = player.visualPosition;
+        const isMoving = x !== player.targetPosition.x || y !== player.targetPosition.y;
+        const bounceOffset = isMoving ? Math.sin(Date.now() * PLAYER_BOUNCE_SPEED) * 2 : 0;
+
+        // Draw player body
+        ctx.fillStyle = player.id === playerId ? '#FF6B6B' : '#868E96';
+        ctx.beginPath();
+        ctx.arc(x, y + bounceOffset, PLAYER_SIZE, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw player outline
+        ctx.strokeStyle = player.isInSafeZone ? '#FFD700' : '#FFFFFF';
+        ctx.lineWidth = PLAYER_OUTLINE_WIDTH;
+        ctx.stroke();
+      }
+    });
+
+    // Draw night overlay
+    if (!gameState.isDayTime) {
+      ctx.fillStyle = `rgba(0, 0, 20, ${NIGHT_OVERLAY_OPACITY})`;
+      ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+
+    // Process movement and continue animation
+    processKeyboardMovement();
+    updatePositions();
+    animationFrameRef.current = requestAnimationFrame(render);
+
+    // Add particle effects here
+    particlesRef.current = particlesRef.current.filter(particle => {
+      particle.x += particle.velocity.x;
+      particle.y += particle.velocity.y;
+      particle.alpha -= 0.02;
+      particle.life -= 0.02;
+
+      if (particle.life > 0) {
+        ctx.fillStyle = `${particle.color}${Math.floor(particle.alpha * 255).toString(16).padStart(2, '0')}`;
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+        ctx.fill();
+        return true;
+      }
+      return false;
+    });
+
+    // Add ripple effects here
+    gameState.safeZones.forEach(zone => {
+      const rippleTime = Date.now() * 0.001;
+      const rippleCount = 3;
+      
+      for (let i = 0; i < rippleCount; i++) {
+        const ripplePhase = (rippleTime + i / rippleCount) % 1;
+        const rippleRadius = zone.radius * (1 + ripplePhase * 0.2);
+        const rippleAlpha = (1 - ripplePhase) * 0.2;
+
+        ctx.strokeStyle = `rgba(255, 215, 0, ${rippleAlpha})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(zone.position.x, zone.position.y, rippleRadius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    });
+
+    // Add joystick rendering to the render function, after drawing everything else but before ctx.restore()
+    if (joystick.active) {
+      // Draw joystick base
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.beginPath();
+      ctx.arc(joystick.startPosition.x, joystick.startPosition.y, JOYSTICK_SIZE / 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Calculate stick position with limit
+      const dx = joystick.currentPosition.x - joystick.startPosition.x;
+      const dy = joystick.currentPosition.y - joystick.startPosition.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const maxDistance = JOYSTICK_SIZE / 2;
+
+      let stickX = joystick.startPosition.x;
+      let stickY = joystick.startPosition.y;
+
+      if (distance > 0) {
+        const limitedDistance = Math.min(distance, maxDistance);
+        stickX += (dx / distance) * limitedDistance;
+        stickY += (dy / distance) * limitedDistance;
+      }
+
+      // Draw stick
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.beginPath();
+      ctx.arc(stickX, stickY, JOYSTICK_INNER_SIZE / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Add D-pad rendering
+    if (!joystick.active) {
+      // Draw D-pad
+      ctx.save();
+      ctx.globalAlpha = DPAD_OPACITY;
+      
+      // Position in bottom left corner
+      const dpadX = DPAD_SIZE;
+      const dpadY = GAME_HEIGHT - DPAD_SIZE;
+
+      // Draw D-pad buttons
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      
+      // Up button
+      ctx.beginPath();
+      ctx.arc(dpadX, dpadY - DPAD_BUTTON_SIZE, DPAD_BUTTON_SIZE/2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Down button
+      ctx.beginPath();
+      ctx.arc(dpadX, dpadY + DPAD_BUTTON_SIZE, DPAD_BUTTON_SIZE/2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Left button
+      ctx.beginPath();
+      ctx.arc(dpadX - DPAD_BUTTON_SIZE, dpadY, DPAD_BUTTON_SIZE/2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Right button
+      ctx.beginPath();
+      ctx.arc(dpadX + DPAD_BUTTON_SIZE, dpadY, DPAD_BUTTON_SIZE/2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }, [gameState, playerId, mousePos, processKeyboardMovement, updatePositions]);
+
+  // Optimize resize handler
 
   // Add mouse move handler
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -139,29 +465,6 @@ const GameCanvas = ({ gameState, playerId, onMove }: GameCanvasProps) => {
         }
       });
     }
-  }, []);
-
-  // Update visual positions
-  const updatePositions = useCallback(() => {
-    playersRef.current.forEach(player => {
-      if (player.visualPosition.x !== player.targetPosition.x || 
-          player.visualPosition.y !== player.targetPosition.y) {
-        
-        const dx = player.targetPosition.x - player.visualPosition.x;
-        const dy = player.targetPosition.y - player.visualPosition.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance < POSITION_THRESHOLD) {
-          // Snap to target if very close
-          player.visualPosition.x = player.targetPosition.x;
-          player.visualPosition.y = player.targetPosition.y;
-        } else {
-          // Smooth movement
-          player.visualPosition.x = lerp(player.visualPosition.x, player.targetPosition.x, MOVEMENT_SPEED);
-          player.visualPosition.y = lerp(player.visualPosition.y, player.targetPosition.y, MOVEMENT_SPEED);
-        }
-      }
-    });
   }, []);
 
   // Add keyboard event handlers
@@ -222,407 +525,46 @@ const GameCanvas = ({ gameState, playerId, onMove }: GameCanvasProps) => {
     };
   }, []);
 
-  // Add keyboard movement processing
-  const processKeyboardMovement = useCallback(() => {
-    const player = playersRef.current.get(playerId);
-    if (!player) return;
-
-    const keys = keyStateRef.current;
-    let dx = 0;
-    let dy = 0;
-
-    if (keys.up) dy -= 1;
-    if (keys.down) dy += 1;
-    if (keys.left) dx -= 1;
-    if (keys.right) dx += 1;
-
-    // If there's movement
-    if (dx !== 0 || dy !== 0) {
-      // Normalize diagonal movement
-      if (dx !== 0 && dy !== 0) {
-        dx *= DIAGONAL_MODIFIER;
-        dy *= DIAGONAL_MODIFIER;
-      }
-
-      // Calculate new position
-      const newX = Math.max(0, Math.min(800, player.targetPosition.x + dx * KEYBOARD_SPEED));
-      const newY = Math.max(0, Math.min(600, player.targetPosition.y + dy * KEYBOARD_SPEED));
-
-      // Only send update if position has changed significantly
-      if (!lastPositionRef.current ||
-          getDistance(lastPositionRef.current, { x: newX, y: newY }) > 1) {
-        
-        // Update the target position immediately for smooth local movement
-        player.targetPosition = { x: newX, y: newY };
-        
-        // Throttle network updates
-        if (!moveTimeoutRef.current) {
-          moveTimeoutRef.current = setTimeout(() => {
-            onMove({ x: newX, y: newY });
-            lastPositionRef.current = { x: newX, y: newY };
-            moveTimeoutRef.current = null;
-          }, 16); // Increase update frequency for more responsive movement
-        }
-      }
-    }
-  }, [playerId, onMove]);
-
-  // Render function
-  const render = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Clear canvas
-    ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    // Draw background with gradient
-    const bgGradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
-    if (gameState.isDayTime) {
-      bgGradient.addColorStop(0, '#87CEEB'); // Sky blue
-      bgGradient.addColorStop(1, '#90EE90'); // Light green
-    } else {
-      bgGradient.addColorStop(0, '#1a1a2e'); // Dark blue
-      bgGradient.addColorStop(1, '#2F4F4F'); // Dark green
-    }
-    ctx.fillStyle = bgGradient;
-    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    // Draw grid pattern
-    ctx.strokeStyle = gameState.isDayTime ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)';
-    ctx.lineWidth = 1;
-    const gridSize = 50;
-    for (let x = 0; x < GAME_WIDTH; x += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, GAME_HEIGHT);
-      ctx.stroke();
-    }
-    for (let y = 0; y < GAME_HEIGHT; y += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(GAME_WIDTH, y);
-      ctx.stroke();
-    }
-
-    // Draw safe zones with pulsing effect
-    const pulseScale = Math.sin(Date.now() * SAFE_ZONE_PULSE_SPEED) * 0.1 + 1;
-    gameState.safeZones.forEach(zone => {
-      // Draw outer glow
-      const gradient = ctx.createRadialGradient(
-        zone.position.x, zone.position.y, zone.radius * 0.8,
-        zone.position.x, zone.position.y, zone.radius * pulseScale
-      );
-      gradient.addColorStop(0, 'rgba(255, 255, 0, 0.2)');
-      gradient.addColorStop(1, 'rgba(255, 255, 0, 0)');
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(zone.position.x, zone.position.y, zone.radius * pulseScale, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw safe zone boundary
-      ctx.strokeStyle = 'rgba(255, 255, 0, 0.5)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(zone.position.x, zone.position.y, zone.radius, 0, Math.PI * 2);
-      ctx.stroke();
-    });
-
-    // Draw resources with enhanced visuals
-    gameState.resources.forEach(resource => {
-      // Calculate size based on resource amount
-      const baseSize = MIN_RESOURCE_SIZE + 
-        ((MAX_RESOURCE_SIZE - MIN_RESOURCE_SIZE) * (resource.amount / MAX_RESOURCE_AMOUNT));
-      
-      // Resource pulse effect
-      const pulse = Math.sin(Date.now() * RESOURCE_PULSE_SPEED) * 0.2 + 1;
-      const size = baseSize * pulse;
-
-      const player = playersRef.current.get(playerId);
-      if (player) {
-        const distance = Math.sqrt(
-          Math.pow(player.visualPosition.x - resource.position.x, 2) +
-          Math.pow(player.visualPosition.y - resource.position.y, 2)
-        );
-
-        // Enhanced resource glow with size-based radius
-        if (distance <= 50) {
-          const glowSize = Math.max(0, 1 - distance / 50) * RESOURCE_GLOW_INTENSITY;
-          const glow = ctx.createRadialGradient(
-            resource.position.x, resource.position.y, 0,
-            resource.position.x, resource.position.y, size * 4
-          );
-          
-          // Type-specific glow colors
-          const glowColors = {
-            food: `rgba(255, 179, 71, ${glowSize})`,
-            water: `rgba(135, 206, 250, ${glowSize})`,
-            oxygen: `rgba(240, 255, 255, ${glowSize})`
-          };
-          
-          glow.addColorStop(0, glowColors[resource.type]);
-          glow.addColorStop(1, 'rgba(255, 255, 255, 0)');
-          ctx.fillStyle = glow;
-          ctx.beginPath();
-          ctx.arc(resource.position.x, resource.position.y, size * 4, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      // Draw resource base with enhanced gradients
-      const resourceGradient = ctx.createRadialGradient(
-        resource.position.x, resource.position.y - size/4, size/4,
-        resource.position.x, resource.position.y + size/2, size * 1.2
-      );
-
-      switch (resource.type) {
-        case 'food':
-          resourceGradient.addColorStop(0, '#FFD700');
-          resourceGradient.addColorStop(0.5, '#FFB347');
-          resourceGradient.addColorStop(1, '#8B4513');
-          break;
-        case 'water':
-          resourceGradient.addColorStop(0, '#E0FFFF');
-          resourceGradient.addColorStop(0.5, '#87CEFA');
-          resourceGradient.addColorStop(1, '#4169E1');
-          break;
-        case 'oxygen':
-          resourceGradient.addColorStop(0, '#FFFFFF');
-          resourceGradient.addColorStop(0.5, '#F0FFFF');
-          resourceGradient.addColorStop(1, '#B0E0E6');
-          break;
-      }
-
-      // Draw resource with shadow
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-      ctx.shadowBlur = 4;
-      ctx.shadowOffsetY = 2;
-      ctx.fillStyle = resourceGradient;
-      ctx.beginPath();
-      ctx.arc(resource.position.x, resource.position.y, size, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowColor = 'transparent';
-
-      // Draw resource icon
-      ctx.font = `${size * 1.2}px Arial`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(
-        RESOURCE_ICONS[resource.type],
-        resource.position.x,
-        resource.position.y
-      );
-
-      // Add hover effect
-      const hoverDistance = getDistance(
-        mousePos,
-        resource.position
-      );
-
-      if (hoverDistance < size * 2) {
-        // Draw hover ring
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([5, 5]);
-        ctx.beginPath();
-        ctx.arc(resource.position.x, resource.position.y, size * 1.5, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Draw resource info tooltip
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.fillRect(mousePos.x + 10, mousePos.y - 20, 120, 30);
-        ctx.fillStyle = 'white';
-        ctx.font = '12px Arial';
-        ctx.fillText(
-          `${resource.type}: +${resource.amount} (${Math.round((resource.amount / MAX_RESOURCE_AMOUNT) * 100)}%)`,
-          mousePos.x + 15,
-          mousePos.y
-        );
-      }
-    });
-
-    // Draw players with enhanced visuals
-    playersRef.current.forEach(player => {
-      const { x, y } = player.visualPosition;
-      const isMoving = x !== player.targetPosition.x || y !== player.targetPosition.y;
-      const bounceOffset = isMoving ? Math.sin(Date.now() * PLAYER_BOUNCE_SPEED) * 2 : 0;
-      const adjustedY = y + bounceOffset;
-
-      // Draw shadow at adjusted position
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-      ctx.beginPath();
-      ctx.ellipse(
-        x, adjustedY + PLAYER_SIZE - 2,
-        PLAYER_SIZE * 0.7,
-        PLAYER_SIZE * 0.2,
-        0, 0, Math.PI * 2
-      );
-      ctx.fill();
-
-      // Draw body at adjusted position
-      const playerGradient = ctx.createRadialGradient(
-        x, adjustedY - PLAYER_SIZE/3, 0,
-        x, adjustedY, PLAYER_SIZE
-      );
-
-      if (player.id === playerId) {
-        playerGradient.addColorStop(0, '#FFA07A');
-        playerGradient.addColorStop(0.6, '#FF6B6B');
-        playerGradient.addColorStop(1, '#C92A2A');
-      } else {
-        playerGradient.addColorStop(0, '#A9A9A9');
-        playerGradient.addColorStop(0.6, '#868E96');
-        playerGradient.addColorStop(1, '#495057');
-      }
-
-      // Draw body
-      ctx.fillStyle = playerGradient;
-      ctx.beginPath();
-      ctx.arc(x, y, PLAYER_SIZE, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw outline
-      ctx.strokeStyle = player.isInSafeZone ? '#FFD700' : '#FFFFFF';
-      ctx.lineWidth = PLAYER_OUTLINE_WIDTH;
-      ctx.stroke();
-
-      // Calculate direction for eyes
-      const dx = player.targetPosition.x - x;
-      const dy = player.targetPosition.y - y;
-      const angle = Math.atan2(dy, dx);
-      
-      // Draw player with direction
-      const eyeOffset = PLAYER_SIZE / 3;
-      const eyeY = adjustedY - PLAYER_SIZE / 4;
-      const pupilOffset = PLAYER_EYE_RADIUS / 2;
-      const pupilX = Math.cos(angle) * pupilOffset;
-      const pupilY = Math.sin(angle) * pupilOffset;
-
-      // Eye whites with direction
-      ctx.fillStyle = PLAYER_EYES_COLOR;
-      ctx.beginPath();
-      ctx.arc(x - eyeOffset, eyeY, PLAYER_EYE_RADIUS, 0, Math.PI * 2);
-      ctx.arc(x + eyeOffset, eyeY, PLAYER_EYE_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Pupils that follow movement direction
-      ctx.fillStyle = '#000000';
-      ctx.beginPath();
-      ctx.arc(x - eyeOffset + pupilX, eyeY + pupilY, PLAYER_EYE_RADIUS/2, 0, Math.PI * 2);
-      ctx.arc(x + eyeOffset + pupilX, eyeY + pupilY, PLAYER_EYE_RADIUS/2, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw player glow in safe zone
-      if (player.isInSafeZone) {
-        const safeGlow = ctx.createRadialGradient(
-          x, y, PLAYER_SIZE,
-          x, y, PLAYER_SIZE * 2
-        );
-        safeGlow.addColorStop(0, 'rgba(255, 215, 0, 0.2)');
-        safeGlow.addColorStop(1, 'rgba(255, 215, 0, 0)');
-        ctx.fillStyle = safeGlow;
-        ctx.beginPath();
-        ctx.arc(x, y, PLAYER_SIZE * 2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Draw player name
-      ctx.font = '12px Arial';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillStyle = 'white';
-      ctx.strokeStyle = 'black';
-      ctx.lineWidth = 3;
-      ctx.strokeText(player.name, x, y + PLAYER_SIZE + 5);
-      ctx.fillText(player.name, x, y + PLAYER_SIZE + 5);
-    });
-
-    // Update transition in render
-    const transitionSpeed = 0.05;
+  // Update transition in render
+  const dayNightTransitionRef = useRef(gameState.isDayTime ? 1 : 0);
+  const transitionSpeed = 0.05;
+  useEffect(() => {
     if (gameState.isDayTime && dayNightTransitionRef.current < 1) {
       dayNightTransitionRef.current = Math.min(1, dayNightTransitionRef.current + transitionSpeed);
     } else if (!gameState.isDayTime && dayNightTransitionRef.current > 0) {
       dayNightTransitionRef.current = Math.max(0, dayNightTransitionRef.current - transitionSpeed);
     }
+  }, [gameState.isDayTime, transitionSpeed]);
 
-    // Use transition value for lighting
-    ctx.fillStyle = `rgba(0, 0, 20, ${(1 - dayNightTransitionRef.current) * NIGHT_OVERLAY_OPACITY})`;
-    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+  // Use transition value for lighting
+  const lightingColor = `rgba(0, 0, 20, ${(1 - dayNightTransitionRef.current) * NIGHT_OVERLAY_OPACITY})`;
 
-    // Process keyboard movement and continue animation
-    processKeyboardMovement();
-    updatePositions();
-    animationFrameRef.current = requestAnimationFrame(render);
+  // Update click handler to account for scaling
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (player?.isSpectator) return; // Use the player from component scope
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    // Move particle update inside render function
-    particlesRef.current = particlesRef.current.filter(particle => {
-      particle.x += particle.velocity.x;
-      particle.y += particle.velocity.y;
-      particle.alpha -= 0.02;
-      particle.life -= 0.02;
+    const rect = canvas.getBoundingClientRect();
+    const scale = scaleRef.current;
+    
+    const x = (e.clientX - rect.left) / scale;
+    const y = (e.clientY - rect.top) / scale;
+    
+    onMove({ x, y });
 
-      if (particle.life > 0) {
-        ctx.fillStyle = `${particle.color}${Math.floor(particle.alpha * 255).toString(16).padStart(2, '0')}`;
-        ctx.beginPath();
-        ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
-        ctx.fill();
-        return true;
-      }
-      return false;
-    });
+    const playerVisual = playersRef.current.get(playerId); // Renamed to avoid conflict
+    if (playerVisual) {
+      playerVisual.targetPosition = { x, y };
+    }
+  };
 
-    // Draw safe zones with pulsing effect
-    gameState.safeZones.forEach(zone => {
-      // Add ripple effect
-      const rippleTime = Date.now() * 0.001;
-      const rippleCount = 3;
-      
-      for (let i = 0; i < rippleCount; i++) {
-        const ripplePhase = (rippleTime + i / rippleCount) % 1;
-        const rippleRadius = zone.radius * (1 + ripplePhase * 0.2);
-        const rippleAlpha = (1 - ripplePhase) * 0.2;
-
-        ctx.strokeStyle = `rgba(255, 215, 0, ${rippleAlpha})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(zone.position.x, zone.position.y, rippleRadius, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    });
-  }, [gameState, playerId, updatePositions, processKeyboardMovement, mousePos]);
-
-  // Update players map when gameState changes
-  useEffect(() => {
-    gameState.players.forEach(player => {
-      const existingPlayer = playersRef.current.get(player.id);
-      if (existingPlayer) {
-        // Update target position
-        existingPlayer.targetPosition = player.position;
-        // Update other properties
-        existingPlayer.resources = player.resources;
-        existingPlayer.score = player.score;
-        existingPlayer.isInSafeZone = player.isInSafeZone;
-      } else {
-        // Create new player with visual position
-        playersRef.current.set(player.id, {
-          ...player,
-          visualPosition: { ...player.position },
-          targetPosition: { ...player.position },
-          name: ''
-        });
-      }
-    });
-
-    // Remove disconnected players
-    Array.from(playersRef.current.keys()).forEach(id => {
-      if (!gameState.players.find(p => p.id === id)) {
-        playersRef.current.delete(id);
-      }
-    });
-  }, [gameState.players]);
+  // Add helper function for distance calculation
+  const getDistance = (pos1: Position, pos2: Position): number => {
+    const dx = pos1.x - pos2.x;
+    const dy = pos1.y - pos2.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
 
   // Start/stop animation loop
   useEffect(() => {
@@ -634,109 +576,150 @@ const GameCanvas = ({ gameState, playerId, onMove }: GameCanvasProps) => {
     };
   }, [render]);
 
-  // Add resize handler
-  const handleResize = useCallback(() => {
-    if (!containerRef.current || !canvasRef.current) return;
+  // Add touch handlers
+  const [joystick, setJoystick] = useState<JoystickState>({
+    active: false,
+    startPosition: { x: 0, y: 0 },
+    currentPosition: { x: 0, y: 0 }
+  });
 
-    const container = containerRef.current;
-    const canvas = canvasRef.current;
+  // Add these variables
+  let touchStartTime = 0;
+  let lastTapTime = 0;
+  const DOUBLE_TAP_DELAY = 300;
 
-    // Get container dimensions
-    const containerWidth = container.clientWidth;
-    const containerHeight = container.clientHeight;
-    const containerRatio = containerWidth / containerHeight;
-
-    let newWidth;
-    let newHeight;
-
-    if (containerRatio > ASPECT_RATIO) {
-      // Container is wider than game ratio
-      newHeight = containerHeight;
-      newWidth = containerHeight * ASPECT_RATIO;
-    } else {
-      // Container is taller than game ratio
-      newWidth = containerWidth;
-      newHeight = containerWidth / ASPECT_RATIO;
-    }
-
-    // Update canvas style dimensions
-    canvas.style.width = `${newWidth}px`;
-    canvas.style.height = `${newHeight}px`;
-
-    // Calculate scale factor
-    scaleRef.current = newWidth / GAME_WIDTH;
-
-    // Calculate canvas position
-    const rect = canvas.getBoundingClientRect();
-    setOverlayPosition({
-      top: rect.top,
-      right: window.innerWidth - rect.right
-    });
-  }, []);
-
-  // Add resize effect
-  useEffect(() => {
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [handleResize]);
-
-  // Update click handler to account for scaling
-  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Update handleTouchStart
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const touch = e.touches[0];
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
     const scale = scaleRef.current;
-    
-    // Convert clicked coordinates to game coordinates
-    const x = (e.clientX - rect.left) / scale;
-    const y = (e.clientY - rect.top) / scale;
-    
-    onMove({ x, y });
+    const touchX = (touch.clientX - rect.left) / scale;
+    const touchY = (touch.clientY - rect.top) / scale;
 
-    const player = playersRef.current.get(playerId);
-    if (player) {
-      player.targetPosition = { x, y };
+    setJoystick({
+      active: true,
+      startPosition: { x: touchX, y: touchY },
+      currentPosition: { x: touchX, y: touchY }
+    });
+  }, []);
+
+  // Add touch duration check in handleTouchEnd
+  const handleTouchEnd = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    setJoystick({
+      active: false,
+      startPosition: { x: 0, y: 0 },
+      currentPosition: { x: 0, y: 0 }
+    });
+  }, []);
+
+  // Update touch handlers
+  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!joystick.active) return;
+
+    const touch = e.touches[0];
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scale = scaleRef.current;
+    const currentX = (touch.clientX - rect.left) / scale;
+    const currentY = (touch.clientY - rect.top) / scale;
+
+    const dx = currentX - joystick.startPosition.x;
+    const dy = currentY - joystick.startPosition.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    if (distance > TOUCH_DEAD_ZONE) {
+      const player = playersRef.current.get(playerId);
+      if (!player) return;
+
+      // Normalize direction and apply constant speed
+      const normalizedDx = dx / distance;
+      const normalizedDy = dy / distance;
+
+      const newX = Math.max(0, Math.min(GAME_WIDTH, player.targetPosition.x + normalizedDx * TOUCH_DIRECTION_SPEED));
+      const newY = Math.max(0, Math.min(GAME_HEIGHT, player.targetPosition.y + normalizedDy * TOUCH_DIRECTION_SPEED));
+
+      player.targetPosition = { x: newX, y: newY };
+      onMove({ x: newX, y: newY });
     }
-  };
 
-  // Add helper function for distance calculation
-  const getDistance = (pos1: Position, pos2: Position): number => {
-    const dx = pos1.x - pos2.x;
-    const dy = pos1.y - pos2.y;
-    return Math.sqrt(dx * dx + dy * dy);
-  };
+    // Update joystick visual position
+    setJoystick(prev => ({
+      ...prev,
+      currentPosition: { x: currentX, y: currentY }
+    }));
+  }, [joystick.active, joystick.startPosition, playerId, onMove]);
 
   return (
     <div 
       ref={containerRef} 
-      className="w-full h-full min-h-[600px] flex items-center justify-center bg-gray-900 relative"
+      className="w-full h-full min-h-screen flex items-center justify-center bg-gray-900 relative overflow-hidden"
     >
-      <div className="relative">
+      <div className="relative w-full h-full">
         <canvas
           ref={canvasRef}
           width={GAME_WIDTH}
           height={GAME_HEIGHT}
           onClick={handleClick}
           onMouseMove={handleMouseMove}
-          className="border border-gray-300 max-w-full max-h-full"
-          style={{ imageRendering: 'pixelated' }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          className="border border-gray-300 max-w-full max-h-full touch-none mx-auto"
+          style={{ 
+            imageRendering: 'pixelated',
+            touchAction: 'none',
+            WebkitTouchCallout: 'none',
+            WebkitUserSelect: 'none',
+            userSelect: 'none',
+            cursor: player?.isSpectator ? 'default' : 'pointer'
+          }}
         />
-        {gameState.players.map(player => (
-          player.id === playerId && (
-            <CanvasOverlay 
-              key={player.id} 
-              player={player}
-              position={overlayPosition}
-              scale={scaleRef.current}
-              isDayTime={gameState.isDayTime}
-            />
-          )
-        ))}
+        {useMemo(() => (
+          gameState.players.map(player => (
+            player.id === playerId && (
+              <CanvasOverlay 
+                key={player.id} 
+                player={player}
+                position={overlayPosition}
+                scale={scaleRef.current}
+                isDayTime={gameState.isDayTime}
+              />
+            )
+          ))
+        ), [gameState.players, playerId, overlayPosition, gameState.isDayTime])}
+        {window.innerWidth < 768 && !localStorage.getItem('mobileHintsShown') && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center text-white p-4">
+            <div className="bg-gray-800/90 rounded-lg p-6 max-w-sm">
+              <h3 className="text-xl mb-4">Mobile Controls</h3>
+              <ul className="space-y-2 mb-4">
+                <li>• Use the joystick to move</li>
+                <li>• Double tap to collect resources</li>
+                <li>• Long press for context menu</li>
+                <li>• Use action buttons for special moves</li>
+              </ul>
+              <button 
+                className="w-full bg-blue-500 py-2 rounded"
+                onClick={() => {
+                  localStorage.setItem('mobileHintsShown', 'true');
+                  // Close hints
+                }}
+              >
+                Got it!
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-};
+});
 
 export default GameCanvas; 

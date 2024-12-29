@@ -13,8 +13,7 @@ const io = new Server(httpServer, {
     allowedHeaders: ["*"],
     credentials: true
   },
-  transports: ['websocket', 'polling'],
-  allowEIO3: true
+  transports: ['websocket', 'polling']
 });
 
 app.use(json());
@@ -24,12 +23,15 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST');
   res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
   next();
 });
 
-// Game constants
-const GAME_DURATION = 2 * 60; // 2 minutes in seconds
-const DAY_NIGHT_CYCLE = 60; // 1 minute per cycle
+// Game constants - Update these values for testing
+const GAME_DURATION = 120; // 2 minutes in seconds
+const PREPARATION_TIME = 3; // 3 seconds for testing
+const GAME_CYCLE_TIME = GAME_DURATION + PREPARATION_TIME; // 123 seconds total
+const DAY_NIGHT_CYCLE = 30; // Change day/night every 30 seconds
 const MAP_SIZE = { width: 800, height: 600 };
 const RESOURCE_COUNT = 20;
 const RESOURCE_COLLECTION_RADIUS = 20; // Distance within which a player can collect resources
@@ -115,14 +117,11 @@ function getDistance(pos1: Position, pos2: Position): number {
 // Add this function to check for resource collection
 function checkResourceCollection(player: Player, resources: Resource[]): Resource | null {
   for (const resource of resources) {
-    const distance = Math.sqrt(
-      Math.pow(player.position.x - resource.position.x, 2) +
-      Math.pow(player.position.y - resource.position.y, 2)
-    );
+    const distance = getDistance(player.position, resource.position);
 
     if (distance < RESOURCE_COLLECTION_RADIUS) {
-      // Add score based on resource amount
-      player.score += Math.floor(resource.amount / 10);
+      // Add score based on resource amount (1 point per resource unit)
+      player.score += resource.amount;
       return resource;
     }
   }
@@ -134,13 +133,18 @@ interface RegistrationData {
   name: string;
 }
 
+// Add this to player type in GameTypes.ts or at the top of server.ts
+interface PlayerState {
+  isSpectator: boolean;
+}
+
 // Update socket connection handling
 io.on('connection', (socket) => {
   console.log('Player connected:', socket.id);
 
   // Handle player registration
   socket.on('register', (data: RegistrationData) => {
-    console.log('Player registered:', socket.id, data.name); // Add logging
+    console.log('Player registered:', socket.id, data.name);
 
     const newPlayer: Player = {
       id: socket.id,
@@ -155,7 +159,8 @@ io.on('connection', (socket) => {
         oxygen: MAX_RESOURCE_VALUE
       },
       score: 0,
-      isInSafeZone: false
+      isInSafeZone: false,
+      isSpectator: false
     };
 
     // Add player to game state
@@ -174,7 +179,7 @@ io.on('connection', (socket) => {
   // Handle player movement
   socket.on('movePlayer', (position: { x: number; y: number }) => {
     const player = gameState.players.get(socket.id);
-    if (player) {
+    if (player && !player.isSpectator) {
       // Update movement state
       playerMovements.set(socket.id, {
         targetPosition: position,
@@ -186,7 +191,7 @@ io.on('connection', (socket) => {
   // Handle resource collection
   socket.on('collectResource', () => {
     const player = gameState.players.get(socket.id);
-    if (!player) return;
+    if (!player || player.isSpectator) return;
 
     const collectedResource = checkResourceCollection(player, gameState.resources);
     if (collectedResource) {
@@ -204,11 +209,12 @@ io.on('connection', (socket) => {
         // Remove the collected resource
         gameState.resources = gameState.resources.filter(r => r.id !== collectedResource.id);
 
-        // Emit the collection event
+        // Emit the collection event with updated score
         io.emit('resourceCollected', {
           resourceId: collectedResource.id,
           playerId: socket.id,
-          newResourceValue: player.resources[collectedResource.type]
+          newResourceValue: player.resources[collectedResource.type],
+          playerScore: player.score
         });
       }
     }
@@ -223,50 +229,134 @@ io.on('connection', (socket) => {
   });
 });
 
-// Game loop
+// Add this function to check if player is dead
+function isPlayerDead(player: Player): boolean {
+  return player.resources.food === 0 && 
+         player.resources.water === 0 && 
+         player.resources.oxygen === 0;
+}
+
+// Update the updatePlayerPositions function
+function updatePlayerPositions() {
+  playerMovements.forEach((movement, playerId) => {
+    const player = gameState.players.get(playerId);
+    if (player && movement.isMoving && !player.isSpectator) {
+      const dx = movement.targetPosition.x - player.position.x;
+      const dy = movement.targetPosition.y - player.position.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      if (distance < 1) {
+        // Player has reached target
+        player.position = movement.targetPosition;
+        movement.isMoving = false;
+      } else {
+        // Calculate base speed and check for resource depletion
+        let speed = 5; // Base speed
+        if (player.resources.food === 0 || 
+            player.resources.water === 0 || 
+            player.resources.oxygen === 0) {
+          speed = speed / 2; // Reduce speed by half if any resource is depleted
+        }
+
+        // Move player towards target
+        const moveX = (dx / distance) * speed;
+        const moveY = (dy / distance) * speed;
+        
+        player.position.x += moveX;
+        player.position.y += moveY;
+
+        // Check for resource collection after movement
+        const collectedResource = checkResourceCollection(player, gameState.resources);
+        if (collectedResource) {
+          // Remove the resource from the game state
+          gameState.resources = gameState.resources.filter(r => r.id !== collectedResource.id);
+          
+          // Add the resource to player's inventory
+          player.resources[collectedResource.type] = Math.min(
+            100,
+            player.resources[collectedResource.type] + collectedResource.amount
+          );
+
+          // Emit resource collection event
+          io.emit('resourceCollected', {
+            resourceId: collectedResource.id,
+            playerId,
+            newResourceValue: player.resources[collectedResource.type],
+            playerScore: player.score
+          });
+        }
+
+        // Update safe zone status
+        player.isInSafeZone = checkPlayerInSafeZone(player);
+
+        // Check if player is completely dead
+        if (isPlayerDead(player)) {
+          handlePlayerDeath(playerId);
+          return;
+        }
+      }
+    }
+  });
+
+  // Emit positions for all moving players
+  const movingPlayers = Array.from(gameState.players.values())
+    .filter(player => playerMovements.get(player.id)?.isMoving);
+
+  if (movingPlayers.length > 0) {
+    io.emit('playersUpdate', movingPlayers);
+  }
+}
+
+// Start position update loop
+setInterval(updatePlayerPositions, TICK_INTERVAL);
+
+// Update the game loop to handle day/night cycle
 function gameLoop() {
   if (gameState.gameStatus === 'running') {
-    // Update time remaining
     gameState.timeRemaining--;
 
-    // Toggle day/night cycle
+    // Toggle day/night cycle every 30 seconds
     if (gameState.timeRemaining % DAY_NIGHT_CYCLE === 0) {
       gameState.isDayTime = !gameState.isDayTime;
       io.emit('dayNightChange', gameState.isDayTime);
     }
 
-    // Update player resources
+    // Update player resources with new depletion rates
     gameState.players.forEach((player) => {
-      const resourceDepletionRate = player.isInSafeZone || gameState.isDayTime ? 1 : 2;
-      
-      player.resources.food = Math.max(0, player.resources.food - resourceDepletionRate);
-      player.resources.water = Math.max(0, player.resources.water - resourceDepletionRate);
-      player.resources.oxygen = Math.max(0, player.resources.oxygen - resourceDepletionRate);
+      // Base depletion rate is 5
+      let depletionRate = 5;
 
-      // Check if player is dead
-      if (player.resources.food === 0 || player.resources.water === 0 || player.resources.oxygen === 0) {
-        io.to(player.id).emit('gameOver', player.score);
+      // If it's night time, multiply the depletion rate
+      if (!gameState.isDayTime) {
+        // If player is not in safe zone during night, use 15
+        // If in safe zone during night, use 10 (5 * 2)
+        depletionRate = player.isInSafeZone ? 10 : 15;
       }
+      
+      // Update each resource type
+      player.resources.food = Math.max(0, player.resources.food - depletionRate);
+      player.resources.water = Math.max(0, player.resources.water - depletionRate);
+      player.resources.oxygen = Math.max(0, player.resources.oxygen - depletionRate);
 
-      // Update player score
-      player.score = calculateScore(player);
+      // Check if player is completely dead
+      if (isPlayerDead(player)) {
+        handlePlayerDeath(player.id);
+      }
     });
 
-    // Emit updated game state
+    // Emit game state update
     io.emit('gameStateUpdate', {
       ...gameState,
       players: Array.from(gameState.players.values())
     });
 
-    // Check if game is finished
     if (gameState.timeRemaining <= 0) {
-      gameState.gameStatus = 'finished';
-      io.emit('gameFinished', Array.from(gameState.players.values()));
+      endGame();
     }
   }
 }
 
-// Start game loop
+// Make sure game loop starts
 setInterval(gameLoop, 1000);
 
 // Start server
@@ -284,20 +374,137 @@ function initializeGame() {
   gameState.gameStatus = 'running';
 }
 
-// Endpoint to start new game
-app.post('/start-game', (req, res) => {
+// Add new game state tracking
+let gameTimer: NodeJS.Timeout | null = null;
+let preparationTimer: NodeJS.Timeout | null = null;
+
+// Add this function to handle game cycles
+function startGameCycle() {
+  // Reset game state
+  gameState.gameStatus = 'waiting';
+  gameState.timeRemaining = PREPARATION_TIME;
+  
+  // Clear existing resources
+  gameState.resources = [];
+  
+  // Reset all players to active state with full resources
+  gameState.players.forEach(player => {
+    player.isSpectator = false; // Reset spectator status for all players
+    player.score = 0;
+    player.resources = {
+      food: MAX_RESOURCE_VALUE,
+      water: MAX_RESOURCE_VALUE,
+      oxygen: MAX_RESOURCE_VALUE
+    };
+  });
+  
+  // Broadcast preparation phase
+  io.emit('preparationPhase', {
+    message: 'New game starting soon',
+    timeRemaining: PREPARATION_TIME
+  });
+
+  // Start preparation countdown
+  if (preparationTimer) clearInterval(preparationTimer);
+  
+  preparationTimer = setInterval(() => {
+    gameState.timeRemaining--;
+    
+    // Emit the current preparation time to all clients
+    io.emit('preparationUpdate', gameState.timeRemaining);
+    
+    if (gameState.timeRemaining <= 0) {
+      clearInterval(preparationTimer!);
+      startGame();
+    }
+  }, 1000);
+}
+
+// Update the startGame function
+function startGame() {
+  // Check if there are any active (non-spectator) players
+  const activePlayers = Array.from(gameState.players.values())
+    .filter(p => !p.isSpectator);
+
+  if (activePlayers.length === 0) {
+    console.log('No active players present, restarting preparation phase');
+    startGameCycle();
+    return;
+  }
+
+  // Initialize game state
   gameState.gameStatus = 'running';
   gameState.timeRemaining = GAME_DURATION;
   gameState.isDayTime = true;
   gameState.resources = generateResources();
   gameState.safeZones = generateSafeZones();
   
-  // Start resource spawning when game starts
+  // Start resource spawning
   startResourceSpawning();
   
-  io.emit('gameStarted');
-  io.emit('gameStateUpdate', gameState);
-  res.status(200).send('Game started');
+  // Broadcast game start
+  io.emit('gameStarted', {
+    ...gameState,
+    players: Array.from(gameState.players.values())
+  });
+}
+
+// Add end game function
+function endGame() {
+  // Clear timers
+  if (gameTimer) clearInterval(gameTimer);
+  
+  // Update game state
+  gameState.gameStatus = 'finished';
+  
+  // Calculate final scores and get winner
+  const players = Array.from(gameState.players.values());
+  const winner = players?.reduce((prev, current) => 
+    (prev.score > current.score) ? prev : current
+  );
+  
+  // Broadcast game end
+  io.emit('gameFinished', {
+    winner,
+    finalScores: players.map(p => ({
+      id: p.id,
+      name: p.name,
+      score: p.score
+    }))
+  });
+
+  // Reset all players' scores
+  gameState.players.forEach(player => {
+    player.score = 0;
+    player.resources = {
+      food: MAX_RESOURCE_VALUE,
+      water: MAX_RESOURCE_VALUE,
+      oxygen: MAX_RESOURCE_VALUE
+    };
+  });
+  
+  // Start new game cycle after a short delay
+  setTimeout(startGameCycle, 5000);
+}
+
+// Make sure to start the game cycle when server starts
+startGameCycle();
+
+// Remove the existing /start-game endpoint since games start automatically
+app.post('/start-game', (req, res) => {
+  res.status(400).json({ error: 'Games start automatically every 3 minutes' });
+});
+
+// Add endpoint to get current game status
+app.get('/game-status', (req, res) => {
+  res.json({
+    status: gameState.gameStatus,
+    timeRemaining: gameState.timeRemaining,
+    players: gameState.players.size,
+    nextGameIn: gameState.gameStatus === 'finished' ? 
+      5 : gameState.gameStatus === 'waiting' ? 
+      gameState.timeRemaining : GAME_CYCLE_TIME - (GAME_DURATION - gameState.timeRemaining)
+  });
 });
 
 // Add error handling middleware
@@ -325,76 +532,6 @@ function checkPlayerInSafeZone(player: Player): boolean {
     return distance <= zone.radius;
   });
 }
-
-// Add function to calculate player score
-function calculateScore(player: Player): number {
-  return Math.floor(
-    (player.resources.food + 
-     player.resources.water + 
-     player.resources.oxygen) * 
-    (gameState.timeRemaining / GAME_DURATION)
-  );
-}
-
-// Add server-side movement update loop
-function updatePlayerPositions() {
-  playerMovements.forEach((movement, playerId) => {
-    const player = gameState.players.get(playerId);
-    if (player && movement.isMoving) {
-      const dx = movement.targetPosition.x - player.position.x;
-      const dy = movement.targetPosition.y - player.position.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-
-      if (distance < 1) {
-        // Player has reached target
-        player.position = movement.targetPosition;
-        movement.isMoving = false;
-      } else {
-        // Move player towards target
-        const speed = 5; // Adjust this value to change movement speed
-        const moveX = (dx / distance) * speed;
-        const moveY = (dy / distance) * speed;
-        
-        player.position.x += moveX;
-        player.position.y += moveY;
-
-        // Check for resource collection after movement
-        const collectedResource = checkResourceCollection(player, gameState.resources);
-        if (collectedResource) {
-          // Remove the resource from the game state
-          gameState.resources = gameState.resources.filter(r => r.id !== collectedResource.id);
-          
-          // Add the resource to player's inventory
-          player.resources[collectedResource.type] = Math.min(
-            100,
-            player.resources[collectedResource.type] + collectedResource.amount
-          );
-
-          // Emit resource collection event
-          io.emit('resourceCollected', {
-            resourceId: collectedResource.id,
-            playerId,
-            newResourceValue: player.resources[collectedResource.type]
-          });
-        }
-
-        // Update safe zone status
-        player.isInSafeZone = checkPlayerInSafeZone(player);
-      }
-    }
-  });
-
-  // Emit positions for all moving players
-  const movingPlayers = Array.from(gameState.players.values())
-    .filter(player => playerMovements.get(player.id)?.isMoving);
-
-  if (movingPlayers.length > 0) {
-    io.emit('playersUpdate', movingPlayers);
-  }
-}
-
-// Start position update loop
-setInterval(updatePlayerPositions, TICK_INTERVAL);
 
 // Add helper function to get random position in a zone
 function getRandomPositionInZone(zone: { x: number; y: number; radius: number }) {
@@ -449,4 +586,25 @@ function startResourceSpawning() {
     // Emit updated resources to all clients
     io.emit('gameStateUpdate', gameState);
   }, RESOURCE_SPAWN_INTERVAL);
+}
+
+// Update the player death handling in updatePlayerPositions and gameLoop
+function handlePlayerDeath(playerId: string) {
+  const player = gameState.players.get(playerId);
+  if (player) {
+    player.isSpectator = true;
+    // Reset resources but keep the player in the game
+    player.resources = {
+      food: 0,
+      water: 0,
+      oxygen: 0
+    };
+    
+    // Notify the player and others
+    io.to(playerId).emit('playerDied');
+    io.emit('playerBecameSpectator', {
+      playerId,
+      playerName: player.name
+    });
+  }
 } 

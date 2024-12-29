@@ -1,3 +1,4 @@
+import React from 'react';
 import { Player } from '../types/GameTypes';
 
 interface CanvasOverlayProps {
@@ -10,18 +11,18 @@ interface CanvasOverlayProps {
   isDayTime: boolean;
 }
 
-const CanvasOverlay = ({ player, position, scale, isDayTime }: CanvasOverlayProps) => {
+const CanvasOverlay = React.memo(({ player, position, scale, isDayTime }: CanvasOverlayProps) => {
   return (
-    <div className="absolute top-4 right-4 flex flex-col gap-4">
+    <div className="fixed inset-x-0 bottom-0 md:inset-auto flex flex-col gap-4 p-4 md:absolute md:top-4 md:right-4 max-w-full md:max-w-[400px] lg:max-w-[500px]">
       {/* Resource Bars */}
-      <div className="w-52 bg-gray-900/90 backdrop-blur-sm rounded-lg border border-gray-700 overflow-hidden">
-        <div className="px-3 py-2 bg-gray-800/50">
+      <div className="w-full md:w-auto bg-gray-900/90 backdrop-blur-sm rounded-lg border border-gray-700 overflow-hidden">
+        <div className="px-4 py-3 bg-gray-800/50">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-gray-300">RESOURCES</span>
-            <span className="text-xs text-gray-400">{isDayTime ? '☀️ Day' : '🌙 Night'}</span>
+            <span className="text-sm md:text-xs font-medium text-gray-300">RESOURCES</span>
+            <span className="text-sm md:text-xs text-gray-400">{isDayTime ? '☀️ Day' : '🌙 Night'}</span>
           </div>
         </div>
-        <div className="p-3 space-y-3">
+        <div className="p-4 md:p-3 space-y-4 md:space-y-3">
           {/* Food Bar */}
           <div>
             <div className="flex justify-between text-xs text-gray-300 mb-1">
@@ -94,11 +95,11 @@ const CanvasOverlay = ({ player, position, scale, isDayTime }: CanvasOverlayProp
       </div>
 
       {/* Status Panel */}
-      <div className="w-52 bg-gray-900/90 backdrop-blur-sm rounded-lg border border-gray-700">
-        <div className="px-3 py-2 bg-gray-800/50">
+      <div className="w-full md:w-auto bg-gray-900/90 backdrop-blur-sm rounded-lg border border-gray-700">
+        <div className="px-4 py-3 bg-gray-800/50">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-gray-300">STATUS</span>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${
+            <span className="text-sm md:text-xs font-medium text-gray-300">STATUS</span>
+            <span className={`text-sm md:text-xs px-2 py-0.5 rounded-full ${
               player.isInSafeZone 
                 ? 'bg-green-900/50 text-green-400' 
                 : 'bg-red-900/50 text-red-400'
@@ -107,7 +108,7 @@ const CanvasOverlay = ({ player, position, scale, isDayTime }: CanvasOverlayProp
             </span>
           </div>
         </div>
-        <div className="p-3">
+        <div className="p-4 md:p-3">
           <div className="flex items-center justify-between text-sm">
             <span className="text-gray-400">Score</span>
             <span className="text-gray-200 font-medium">{player.score}</span>
@@ -116,6 +117,19 @@ const CanvasOverlay = ({ player, position, scale, isDayTime }: CanvasOverlayProp
       </div>
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison function to prevent unnecessary re-renders
+  return (
+    prevProps.player.resources.food === nextProps.player.resources.food &&
+    prevProps.player.resources.water === nextProps.player.resources.water &&
+    prevProps.player.resources.oxygen === nextProps.player.resources.oxygen &&
+    prevProps.player.score === nextProps.player.score &&
+    prevProps.player.isInSafeZone === nextProps.player.isInSafeZone &&
+    prevProps.isDayTime === nextProps.isDayTime &&
+    prevProps.position.top === nextProps.position.top &&
+    prevProps.position.right === nextProps.position.right &&
+    prevProps.scale === nextProps.scale
+  );
+});
 
 export default CanvasOverlay; 

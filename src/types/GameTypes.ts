@@ -27,6 +27,7 @@ export interface Player {
   };
   score: number;
   isInSafeZone: boolean;
+  isSpectator: boolean;
 }
 
 export interface GameState {

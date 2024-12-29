@@ -18,6 +18,7 @@ export interface SafeZone {
 
 export interface Player {
   id: string;
+  name: string;
   position: Position;
   resources: {
     food: number;
@@ -26,6 +27,7 @@ export interface Player {
   };
   score: number;
   isInSafeZone: boolean;
+  isSpectator: boolean;
 }
 
 export interface PlayerVisual extends Player {
@@ -40,4 +42,24 @@ export interface GameState {
   isDayTime: boolean;
   timeRemaining: number;
   gameStatus: 'waiting' | 'running' | 'finished';
+  winner?: Player;
+  finalScores?: {
+    id: string;
+    name: string;
+    score: number;
+  }[];
+}
+
+export interface PreparationPhaseData {
+  message: string;
+  timeRemaining: number;
+}
+
+export interface GameFinishedData {
+  winner: Player;
+  finalScores: {
+    id: string;
+    name: string;
+    score: number;
+  }[];
 } 

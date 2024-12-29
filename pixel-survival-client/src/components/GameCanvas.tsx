@@ -112,7 +112,7 @@ const GameCanvas = React.memo(({ gameState, playerId, onMove, socket }: GameCanv
   const scaleRef = useRef<number>(1);
 
   // Memoize state updates
-  const [overlayPosition, setOverlayPosition] = useState({ top: 0, right: 0 });
+  const [overlayPosition] = useState({ top: 0, right: 0 });
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
   // Memoize player updates

@@ -7,6 +7,7 @@ import RegisterForm from './components/RegisterForm';
 import Leaderboard from './components/Leaderboard';
 import React from 'react';
 
+
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://192.168.1.100:3000';
 
 // Memoize GameCanvas component
@@ -190,6 +191,7 @@ function App() {
     });
 
     socket.on('gameOver', (score: number) => {
+      console.log('Game over:', score);
       soundManager.play('gameOver');
     });
 

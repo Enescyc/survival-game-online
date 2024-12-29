@@ -387,15 +387,16 @@ function startGameCycle() {
   // Clear existing resources
   gameState.resources = [];
   
-  // Reset all players to active state with full resources
+  // Reset players but keep spectators as spectators
   gameState.players.forEach(player => {
-    player.isSpectator = false; // Reset spectator status for all players
-    player.score = 0;
-    player.resources = {
-      food: MAX_RESOURCE_VALUE,
-      water: MAX_RESOURCE_VALUE,
-      oxygen: MAX_RESOURCE_VALUE
-    };
+    if (!player.isSpectator) {
+      player.score = 0;
+      player.resources = {
+        food: MAX_RESOURCE_VALUE,
+        water: MAX_RESOURCE_VALUE,
+        oxygen: MAX_RESOURCE_VALUE
+      };
+    }
   });
   
   // Broadcast preparation phase

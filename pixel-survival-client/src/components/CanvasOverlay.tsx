@@ -11,7 +11,7 @@ interface CanvasOverlayProps {
   isDayTime: boolean;
 }
 
-const CanvasOverlay = React.memo(({ player, position, scale, isDayTime }: CanvasOverlayProps) => {
+const CanvasOverlay = React.memo(({ player, isDayTime }: CanvasOverlayProps) => {
   return (
     <div className="fixed inset-x-0 bottom-0 md:inset-auto flex flex-col gap-4 p-4 md:absolute md:top-4 md:right-4 max-w-full md:max-w-[400px] lg:max-w-[500px]">
       {/* Resource Bars */}
